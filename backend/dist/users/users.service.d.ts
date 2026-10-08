@@ -7,6 +7,7 @@ export declare class UsersService {
     private readonly roleModel;
     constructor(userModel: Model<UserDocument>, roleModel: Model<RoleDocument>);
     private generateClaudeMessage;
+    private triggerPostAgentCommand;
     create(createUserDto: CreateUserDto): Promise<{
         message: string;
         createdUser?: undefined;

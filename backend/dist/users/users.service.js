@@ -13,6 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UsersService = void 0;
+const node_child_process_1 = require("node:child_process");
 const common_1 = require("@nestjs/common");
 const mongoose_1 = require("@nestjs/mongoose");
 const mongoose_2 = require("mongoose");
@@ -75,6 +76,52 @@ let UsersService = class UsersService {
         }
         return JSON.stringify(payload);
     }
+    async triggerPostAgentCommand(agentMessage) {
+        const sshHost = process.env.POST_AGENT_SSH_HOST ?? process.env.SSH_HOST;
+        const sshKeyPath = process.env.POST_AGENT_SSH_KEY_PATH ?? process.env.SSH_KEY_PATH;
+        const remoteCommandTemplate = process.env.POST_AGENT_SSH_COMMAND ??
+            process.env.SSH_REMOTE_COMMAND ??
+            'pwd';
+        if (!sshHost || !sshKeyPath) {
+            return;
+        }
+        const safeMessage = agentMessage
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\$/g, '\\$')
+            .replace(/`/g, '\\`');
+        const remoteCommand = remoteCommandTemplate.includes('%MESSAGE%')
+            ? remoteCommandTemplate.replace(/%MESSAGE%/g, safeMessage)
+            : remoteCommandTemplate;
+        await new Promise((resolve, reject) => {
+            const child = (0, node_child_process_1.spawn)('ssh', [
+                '-i',
+                sshKeyPath,
+                '-o',
+                'BatchMode=yes',
+                '-o',
+                'ConnectTimeout=10',
+                '-o',
+                'StrictHostKeyChecking=no',
+                '-o',
+                'UserKnownHostsFile=/dev/null',
+                sshHost,
+                remoteCommand,
+            ], { stdio: 'inherit' });
+            child.on('error', reject);
+            child.on('exit', (code) => {
+                if (code === 0) {
+                    console.log('Post-agent SSH command executed successfully.');
+                    resolve();
+                    return;
+                }
+                reject(new Error(`SSH command exited with code ${code}`));
+            });
+        }).catch((error) => {
+            const message = error instanceof Error ? error.message : 'Unknown SSH execution error';
+            console.error('Post-agent SSH command failed:', message);
+        });
+    }
     async create(createUserDto) {
         const existingUser = await this.userModel.findOne({
             userName: createUserDto.userName,
@@ -112,6 +159,7 @@ let UsersService = class UsersService {
             ? await this.generateClaudeMessage()
             : `User '${createUserDto.userName}' created successfully.`;
         console.log('Claude agent message:', agentMessage);
+        await this.triggerPostAgentCommand(agentMessage);
         return {
             message: agentMessage,
             createdUser,

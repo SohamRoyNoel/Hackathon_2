@@ -1,6 +1,6 @@
+import { spawn } from 'node:child_process';
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import Anthropic from '@anthropic-ai/sdk';
 import { Model } from 'mongoose';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { Role, RoleDocument } from '../schemas/role.schema';
@@ -79,6 +79,66 @@ export class UsersService {
     return JSON.stringify(payload);
   }
 
+  private async triggerPostAgentCommand(agentMessage: string): Promise<void> {
+    const sshHost = process.env.POST_AGENT_SSH_HOST ?? process.env.SSH_HOST;
+    const sshKeyPath =
+      process.env.POST_AGENT_SSH_KEY_PATH ?? process.env.SSH_KEY_PATH;
+    const remoteCommandTemplate =
+      process.env.POST_AGENT_SSH_COMMAND ??
+      process.env.SSH_REMOTE_COMMAND ??
+      'pwd';
+
+    if (!sshHost || !sshKeyPath) {
+      return;
+    }
+
+    const safeMessage = agentMessage
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\$/g, '\\$')
+      .replace(/`/g, '\\`');
+
+    const remoteCommand = remoteCommandTemplate.includes('%MESSAGE%')
+      ? remoteCommandTemplate.replace(/%MESSAGE%/g, safeMessage)
+      : remoteCommandTemplate;
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        'ssh',
+        [
+          '-i',
+          sshKeyPath,
+          '-o',
+          'BatchMode=yes',
+          '-o',
+          'ConnectTimeout=10',
+          '-o',
+          'StrictHostKeyChecking=no',
+          '-o',
+          'UserKnownHostsFile=/dev/null',
+          sshHost,
+          remoteCommand,
+        ],
+        { stdio: 'inherit' },
+      );
+
+      child.on('error', reject);
+      child.on('exit', (code) => {
+        if (code === 0) {
+          console.log('Post-agent SSH command executed successfully.');
+          resolve();
+          return;
+        }
+
+        reject(new Error(`SSH command exited with code ${code}`));
+      });
+    }).catch((error) => {
+      const message =
+        error instanceof Error ? error.message : 'Unknown SSH execution error';
+      console.error('Post-agent SSH command failed:', message);
+    });
+  }
+
   async create(createUserDto: CreateUserDto) {
     const existingUser = await this.userModel.findOne({
       userName: createUserDto.userName,
@@ -127,6 +187,8 @@ export class UsersService {
       : `User '${createUserDto.userName}' created successfully.`;
 
     console.log('Claude agent message:', agentMessage);
+
+    await this.triggerPostAgentCommand(agentMessage);
 
     return {
       message: agentMessage,
